@@ -357,11 +357,12 @@ class SpeakerEmbedding(nn.Module):
     def __init__(self, ckpt_path: str = "ResNet293_SimAM_ASP_base.pt", device: str = DEFAULT_DEVICE):
         super().__init__()
         self.device = device
-        with torch.device(device):
+        with torch.device("cpu"):
             self.model = ResNet293_based()
             state_dict = torch.load(ckpt_path, weights_only=True, mmap=True, map_location="cpu")
             self.model.load_state_dict(state_dict)
             self.model.featCal = logFbankCal()
+        self.model.to(device)
 
         self.requires_grad_(False).eval()
 
