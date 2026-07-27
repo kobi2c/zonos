@@ -17,8 +17,8 @@ SPEAKER_AUDIO_PATH = None
 def load_model_if_needed(model_choice: str):
     global CURRENT_MODEL_TYPE, CURRENT_MODEL
     if CURRENT_MODEL_TYPE != model_choice:
-        if CURRENT_MODEL is not None:
-            del CURRENT_MODEL
+        if globals().get("CURRENT_MODEL") is not None:
+            CURRENT_MODEL = None
             torch.cuda.empty_cache()
         print(f"Loading {model_choice} model...")
         CURRENT_MODEL = Zonos.from_pretrained(model_choice, device=device)

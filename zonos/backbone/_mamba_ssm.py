@@ -3,6 +3,13 @@ import torch.nn as nn
 from mamba_ssm.models.mixer_seq_simple import create_block
 from mamba_ssm.ops.triton.layer_norm import layer_norm_fn
 
+try:
+    from flash_attn.layers.rotary import RotaryEmbedding
+    if RotaryEmbedding is None:
+        raise ImportError("flash_attn rotary is None")
+except ImportError as e:
+    raise ImportError(f"mamba_ssm requires flash_attn rotary: {e}")
+
 from zonos.config import BackboneConfig, InferenceParams
 
 
