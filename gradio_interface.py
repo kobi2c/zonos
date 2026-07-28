@@ -1,6 +1,10 @@
 import torch
 import soundfile as sf
 import gradio as gr
+import json
+import base64
+import tempfile
+import os
 from os import getenv
 
 from zonos.model import Zonos, DEFAULT_BACKBONE_CLS as ZonosBackbone
@@ -207,6 +211,98 @@ def generate_audio(
     return (sr_out, wav_out.squeeze().numpy()), seed
 
 
+SETTINGS_KEYS = [
+    "model_choice",
+    "text",
+    "language",
+    "speaker_audio",
+    "prefix_audio",
+    "emotion1",
+    "emotion2",
+    "emotion3",
+    "emotion4",
+    "emotion5",
+    "emotion6",
+    "emotion7",
+    "emotion8",
+    "vq_single_slider",
+    "fmax_slider",
+    "pitch_std_slider",
+    "speaking_rate_slider",
+    "dnsmos_slider",
+    "speaker_noised_checkbox",
+    "cfg_scale_slider",
+    "top_p_slider",
+    "min_k_slider",
+    "min_p_slider",
+    "linear_slider",
+    "confidence_slider",
+    "quadratic_slider",
+    "seed_number",
+    "randomize_seed_toggle",
+    "unconditional_keys",
+]
+
+
+def audio_to_base64(filepath):
+    if not filepath or not os.path.exists(filepath):
+        return None
+    with open(filepath, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("utf-8")
+    ext = os.path.splitext(filepath)[1]
+    return {"ext": ext, "data": encoded}
+
+
+def base64_to_audio(b64_dict):
+    if not b64_dict or "data" not in b64_dict:
+        return None
+    ext = b64_dict.get("ext", ".wav")
+    decoded = base64.b64decode(b64_dict["data"])
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as f:
+        f.write(decoded)
+        return f.name
+
+
+def export_settings(*args):
+    settings = {}
+    for key, value in zip(SETTINGS_KEYS, args):
+        if key in ["speaker_audio", "prefix_audio"]:
+            settings[key] = audio_to_base64(value)
+        else:
+            settings[key] = value
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as f:
+        json.dump(settings, f, indent=4)
+        return f.name
+
+
+def import_settings(file_path):
+    if not file_path:
+        return [gr.update()] * len(SETTINGS_KEYS)
+    try:
+        with open(file_path, "r") as f:
+            settings = json.load(f)
+    except Exception as e:
+        print(f"Error loading settings: {e}")
+        return [gr.update()] * len(SETTINGS_KEYS)
+        
+    outputs = []
+    for key in SETTINGS_KEYS:
+        if key not in settings:
+            outputs.append(gr.update())
+            continue
+            
+        val = settings[key]
+        if key in ["speaker_audio", "prefix_audio"]:
+            if val is not None and isinstance(val, dict):
+                outputs.append(base64_to_audio(val))
+            else:
+                outputs.append(None)
+        else:
+            outputs.append(val)
+    return tuple(outputs)
+
+
 def build_interface():
     supported_models = []
     if "transformer" in ZonosBackbone.supported_architectures:
@@ -221,6 +317,11 @@ def build_interface():
         )
 
     with gr.Blocks() as demo:
+        with gr.Row():
+            import_button = gr.UploadButton("Import Settings", file_types=[".json"])
+            export_button = gr.Button("Export Settings")
+            export_file = gr.File(label="Exported Settings", visible=False)
+
         with gr.Row():
             with gr.Column():
                 model_choice = gr.Dropdown(
@@ -412,6 +513,50 @@ def build_interface():
                 unconditional_keys,
             ],
             outputs=[output_audio, seed_number],
+        )
+
+        stateful_components = [
+            model_choice,
+            text,
+            language,
+            speaker_audio,
+            prefix_audio,
+            emotion1,
+            emotion2,
+            emotion3,
+            emotion4,
+            emotion5,
+            emotion6,
+            emotion7,
+            emotion8,
+            vq_single_slider,
+            fmax_slider,
+            pitch_std_slider,
+            speaking_rate_slider,
+            dnsmos_slider,
+            speaker_noised_checkbox,
+            cfg_scale_slider,
+            top_p_slider,
+            min_k_slider,
+            min_p_slider,
+            linear_slider,
+            confidence_slider,
+            quadratic_slider,
+            seed_number,
+            randomize_seed_toggle,
+            unconditional_keys,
+        ]
+
+        export_button.click(
+            fn=lambda *args: gr.update(value=export_settings(*args), visible=True),
+            inputs=stateful_components,
+            outputs=export_file,
+        )
+
+        import_button.upload(
+            fn=import_settings,
+            inputs=import_button,
+            outputs=stateful_components,
         )
 
     return demo
