@@ -171,6 +171,9 @@ def generate_audio(
     vq_val = float(vq_single)
     vq_tensor = torch.tensor([vq_val] * 8, device=device).unsqueeze(0)
 
+    # Remove apostrophes which can cause issues with the phonemizer/TTS
+    text = text.replace("'", "").replace("’", "").replace("‘", "")
+
     cond_dict = make_cond_dict(
         text=text,
         language=language,
@@ -305,9 +308,6 @@ def import_settings(file_path):
 
 def build_interface():
     supported_models = []
-    if "transformer" in ZonosBackbone.supported_architectures:
-        supported_models.append("Zyphra/Zonos-v0.1-transformer")
-
     if "hybrid" in ZonosBackbone.supported_architectures:
         supported_models.append("Zyphra/Zonos-v0.1-hybrid")
     else:
@@ -315,6 +315,9 @@ def build_interface():
             "| The current ZonosBackbone does not support the hybrid architecture, meaning only the transformer model will be available in the model selector.\n"
             "| This probably means the mamba-ssm library has not been installed."
         )
+
+    if "transformer" in ZonosBackbone.supported_architectures:
+        supported_models.append("Zyphra/Zonos-v0.1-transformer")
 
     with gr.Blocks() as demo:
         with gr.Row():
