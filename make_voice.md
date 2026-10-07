@@ -18,7 +18,7 @@ Assuming your current directory contains `input.txt` and `config.json`, run:
 
 ```bash
 docker run --gpus all -v "$(pwd):/app/data" zonos python make_voice.py --text /app/data/input.txt --config /app/data/config.json --output_dir /app/data/output_wavs
-# docker run --rm --gpus=all -p 7860:7860 -v "%cd%:/app" -v zonos_cache:/root/.cache/huggingface zonos python make_voice.py --text /app/data/a.txt --config /app/data/config1.json --output_dir /app/data/
+# docker run --rm --gpus=all -v "%cd%:/app" -v zonos_cache:/root/.cache/huggingface zonos python make_voice.py --text /app/data/a.txt --config /app/data/config1.json --output_dir /app/data/
 ```
 
 

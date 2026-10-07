@@ -13,3 +13,5 @@ wheels/
 .ipynb_checkpoints/
 *.wav
 data
+
+config1.json

@@ -10,61 +10,70 @@ from tqdm import tqdm
 from gradio_interface import SETTINGS_KEYS, base64_to_audio, generate_audio
 
 def split_text(text, max_len=200):
-    # First split by major sentence boundaries
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    parts = []
-    
-    for s in sentences:
-        s = s.strip()
-        if not s: continue
-        
-        if len(s) <= max_len:
-            parts.append(s)
+    all_combined_parts = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line: continue
+        if line.startswith("---") or line.startswith("["): 
             continue
-            
-        # If still too long, split by commas, colons, semicolons
-        sub_sentences = re.split(r'(?<=[,;:])\s+', s)
-        current_part = ''
         
-        for sub in sub_sentences:
-            sub = sub.strip()
-            if not sub: continue
+        # First split by major sentence boundaries
+        sentences = re.split(r'(?<=[.!?])\s+', line)
+        parts = []
+        
+        for s in sentences:
+            s = s.strip()
+            if not s: continue
             
-            if len(sub) > max_len:
-                # If STILL too long, split by words
-                words = sub.split(' ')
-                for w in words:
-                    if len(current_part) + len(w) + 1 > max_len:
+            if len(s) <= max_len:
+                parts.append(s)
+                continue
+                
+            # If still too long, split by commas, colons, semicolons
+            sub_sentences = re.split(r'(?<=[,;:])\s+', s)
+            current_part = ''
+            
+            for sub in sub_sentences:
+                sub = sub.strip()
+                if not sub: continue
+                
+                if len(sub) > max_len:
+                    # If STILL too long, split by words
+                    words = sub.split(' ')
+                    for w in words:
+                        if len(current_part) + len(w) + 1 > max_len:
+                            if current_part:
+                                parts.append(current_part.strip())
+                            current_part = w + ' '
+                        else:
+                            current_part += w + ' '
+                else:
+                    if len(current_part) + len(sub) + 1 > max_len:
                         if current_part:
                             parts.append(current_part.strip())
-                        current_part = w + ' '
+                        current_part = sub + ' '
                     else:
-                        current_part += w + ' '
-            else:
-                if len(current_part) + len(sub) + 1 > max_len:
-                    if current_part:
-                        parts.append(current_part.strip())
-                    current_part = sub + ' '
-                else:
-                    current_part += sub + ' '
-                    
-        if current_part:
-            parts.append(current_part.strip())
-            
-    # Combine small parts if possible
-    combined_parts = []
-    current_part = ''
-    for p in parts:
-        if len(current_part) + len(p) + 1 <= max_len:
-            current_part += (' ' if current_part else '') + p
-        else:
+                        current_part += sub + ' '
+                        
             if current_part:
-                combined_parts.append(current_part)
-            current_part = p
-    if current_part:
-        combined_parts.append(current_part)
+                parts.append(current_part.strip())
+                
+        # Combine small parts if possible
+        combined_parts = []
+        current_part = ''
+        for p in parts:
+            if len(current_part) + len(p) + 1 <= max_len:
+                current_part += (' ' if current_part else '') + p
+            else:
+                if current_part:
+                    combined_parts.append(current_part)
+                current_part = p
+        if current_part:
+            combined_parts.append(current_part)
+            
+        all_combined_parts.extend(combined_parts)
         
-    return combined_parts
+    return all_combined_parts
 
 def format_srt_time(seconds):
     hours = int(seconds // 3600)
@@ -90,9 +99,10 @@ def main():
             text = f.read()
 
     # Replace em-dashes and en-dashes with standard hyphens
+    text = text.replace("_", " ")
     text = text.replace("—", "-").replace("–", "-")
     # Remove apostrophes which can cause issues with the phonemizer/TTS
-    text = text.replace("'", "").replace("’", "").replace("‘", "")
+    text = text.replace("’", "").replace("‘", "")
 
     parts = split_text(text, max_len=200)
     print(f"Split text into {len(parts)} parts.")
