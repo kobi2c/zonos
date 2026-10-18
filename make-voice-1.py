@@ -84,18 +84,18 @@ def format_srt_time(seconds):
 
 def main():
     parser = argparse.ArgumentParser(description="Generate voice from text using exported Gradio settings")
-    parser.add_argument("--text", type=str, required=True, help="Path to text file")
-    parser.add_argument("--config", type=str, required=True, help="Path to JSON settings file")
-    parser.add_argument("--output_dir", type=str, default=".", help="Output directory for wav files")
+    parser.add_argument("--input"      , "-i" , type=str, required=True, help="Path to text file")
+    parser.add_argument("--config"     , "-c" , type=str, required=True, help="Path to JSON settings file")
+    parser.add_argument("--output_dir" , "-o" , type=str, default=".", help="Output directory for wav files")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
 
     try:
-        with open(args.text, "r", encoding="utf-8") as f:
+        with open(args.input, "r", encoding="utf-8") as f:
             text = f.read()
     except UnicodeDecodeError:
-        with open(args.text, "r", encoding="cp1252") as f:
+        with open(args.input, "r", encoding="cp1252") as f:
             text = f.read()
 
     # Replace em-dashes and en-dashes with standard hyphens
@@ -161,7 +161,7 @@ def main():
         global_sr = sr_out
         
         # save
-        basename = os.path.splitext(os.path.basename(args.text))[0]
+        basename = os.path.splitext(os.path.basename(args.input))[0]
         out_path = os.path.join(args.output_dir, f"{basename}_{i+1:03d}.wav")
         sf.write(out_path, wav_out, sr_out)
         

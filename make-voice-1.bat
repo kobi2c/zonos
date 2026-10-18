@@ -1,0 +1,1 @@
+docker run --rm --gpus=all -v "%cd%:/app" -v zonos_cache:/root/.cache/huggingface zonos:he python3 make-voice-1.py %*
