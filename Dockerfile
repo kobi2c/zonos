@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+FROM nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
 
 # Environment
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -6,7 +6,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CUDA_HOME=/usr/local/cuda \
     PATH=/usr/local/cuda/bin:${PATH} \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH} \
-    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0" \
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0" \
+    FLASH_ATTN_CUDA_ARCHS="120" \
     FORCE_CUDA=1 \
     NVCC_FLAGS="-Xcompiler -Wno-register"
 
@@ -36,21 +37,27 @@ WORKDIR /app
 # Copy project
 COPY pyproject.toml ./
 
-# Torch triplet pinned for CUDA 12.4 + build dependencies for C++/CUDA extensions
+# Torch triplet pinned for CUDA 12.8 (supports sm_120 / RTX 50 series) + build dependencies
 RUN python3 -m pip install --upgrade pip setuptools wheel && \
-    python3 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 \
-      torch==2.6.0+cu124 torchaudio==2.6.0+cu124 torchvision==0.21.0+cu124 && \
+    python3 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 \
+      torch torchvision torchaudio && \
     python3 -m pip install --no-cache-dir psutil ninja packaging
 
 # Limit concurrent compile jobs to prevent Docker OOM
 ENV MAX_JOBS=4
 
-# Install flash-attn (pre-built wheel for Torch 2.6 + CUDA 12 + cp310) and compile mamba-ssm / causal-conv1d
-RUN python3 -m pip install --no-cache-dir \
-      https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl && \
+# Step 1: Install flash-attn from source with sm_120 support
+RUN python3 -m pip install --no-cache-dir --no-build-isolation \
+      --no-binary flash-attn 'flash-attn==2.7.4.post1'
+
+# Step 2: Install latest causal-conv1d and mamba-ssm from git with sm_120 compilation support
+ENV CAUSAL_CONV1D_FORCE_BUILD=TRUE \
+    MAMBA_FORCE_BUILD=TRUE
+
+RUN python3 -m pip install --no-cache-dir --no-build-isolation \
+      git+https://github.com/Dao-AILab/causal-conv1d.git && \
     python3 -m pip install --no-cache-dir --no-build-isolation \
-      --no-binary mamba-ssm --no-binary causal-conv1d \
-      'mamba-ssm==2.2.4' 'causal-conv1d==1.5.0.post8'
+      git+https://github.com/state-spaces/mamba.git
 
 # Copy project files and install in editable mode
 COPY . ./
