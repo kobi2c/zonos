@@ -34,21 +34,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Copy project
-COPY . ./
+COPY pyproject.toml ./
 
-# Torch triplet pinned for CUDA 12.4
+# Torch triplet pinned for CUDA 12.4 + build dependencies for C++/CUDA extensions
 RUN python3 -m pip install --upgrade pip setuptools wheel && \
     python3 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 \
-      torch==2.6.0+cu124 torchaudio==2.6.0+cu124 torchvision==0.21.0+cu124
+      torch==2.6.0+cu124 torchaudio==2.6.0+cu124 torchvision==0.21.0+cu124 && \
+    python3 -m pip install --no-cache-dir psutil ninja packaging
 
-# Install project (from pyproject.toml)
+# Limit concurrent compile jobs to prevent Docker OOM
+ENV MAX_JOBS=4
+
+# Install flash-attn (pre-built wheel for Torch 2.6 + CUDA 12 + cp310) and compile mamba-ssm / causal-conv1d
+RUN python3 -m pip install --no-cache-dir \
+      https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl && \
+    python3 -m pip install --no-cache-dir --no-build-isolation \
+      --no-binary mamba-ssm --no-binary causal-conv1d \
+      'mamba-ssm==2.2.4' 'causal-conv1d==1.5.0.post8'
+
+# Copy project files and install in editable mode
+COPY . ./
 RUN python3 -m pip install --no-cache-dir -e .
-
-# Compile extras from source for CUDA 12.4 / Torch 2.6.0
-RUN python3 -m pip install --no-cache-dir --no-build-isolation \
-      --no-binary flash-attn --no-binary mamba-ssm --no-binary causal-conv1d \
-      'flash-attn==2.7.4.post1' 'mamba-ssm==2.2.4' 'causal-conv1d==1.5.0.post8'
-
 # Expose Gradio default port
 EXPOSE 7860
 
