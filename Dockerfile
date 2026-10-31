@@ -57,7 +57,8 @@ ENV CAUSAL_CONV1D_FORCE_BUILD=TRUE \
 RUN python3 -m pip install --no-cache-dir --no-build-isolation \
       git+https://github.com/Dao-AILab/causal-conv1d.git && \
     python3 -m pip install --no-cache-dir --no-build-isolation \
-      git+https://github.com/state-spaces/mamba.git
+      git+https://github.com/state-spaces/mamba.git && \
+    python3 -m pip install --no-cache-dir "apache-tvm-ffi<=0.1.9"
 
 # Copy project files and install in editable mode
 COPY . ./
