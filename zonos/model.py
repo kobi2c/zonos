@@ -18,6 +18,10 @@ from zonos.utils import DEFAULT_DEVICE, find_multiple, pad_weight_
 
 DEFAULT_BACKBONE_CLS = next(iter(BACKBONES.values()))
 
+KNOWN_WEIGHTS_FILES = {
+    "notmax123/Zonos-Hebrew": "Zonos-v0.1-hybrid-Hebrew.safetensors",
+}
+
 
 class Zonos(nn.Module):
     def __init__(self, config: ZonosConfig, backbone_cls=DEFAULT_BACKBONE_CLS):
@@ -56,10 +60,17 @@ class Zonos(nn.Module):
 
     @classmethod
     def from_pretrained(
-        cls, repo_id: str, revision: str | None = None, device: str = DEFAULT_DEVICE, **kwargs
+        cls,
+        repo_id: str,
+        revision: str | None = None,
+        device: str = DEFAULT_DEVICE,
+        weights_file: str | None = None,
+        **kwargs,
     ) -> "Zonos":
+        if weights_file is None:
+            weights_file = KNOWN_WEIGHTS_FILES.get(repo_id, "model.safetensors")
         config_path = hf_hub_download(repo_id=repo_id, filename="config.json", revision=revision)
-        model_path = hf_hub_download(repo_id=repo_id, filename="model.safetensors", revision=revision)
+        model_path = hf_hub_download(repo_id=repo_id, filename=weights_file, revision=revision)
         return cls.from_local(config_path, model_path, device, **kwargs)
 
     @classmethod
@@ -75,6 +86,8 @@ class Zonos(nn.Module):
             # Preferentially route to pure torch backbone for increased performance and lower latency.
             if is_transformer and "torch" in BACKBONES:
                 backbone_cls = BACKBONES["torch"]
+            elif (not is_transformer) and ("mamba_ssm" in BACKBONES):
+                backbone_cls = BACKBONES["mamba_ssm"]
 
         model = cls(config, backbone_cls).to(device, torch.bfloat16)
         model.autoencoder.dac.to(device)
@@ -84,15 +97,17 @@ class Zonos(nn.Module):
             for k in f.keys():
                 sd[k] = f.get_tensor(k)
         model.load_state_dict(sd)
+        model.to(device)
 
         return model
 
     def make_speaker_embedding(self, wav: torch.Tensor, sr: int) -> torch.Tensor:
         """Generate a speaker embedding from an audio clip."""
         if self.spk_clone_model is None:
-            self.spk_clone_model = SpeakerEmbeddingLDA()
-        _, spk_embedding = self.spk_clone_model(wav.to(self.spk_clone_model.device), sr)
-        return spk_embedding.unsqueeze(0).bfloat16()
+            self.spk_clone_model = SpeakerEmbeddingLDA(device=self.device)
+        self.spk_clone_model.to(self.device)
+        _, spk_embedding = self.spk_clone_model(wav.to(self.device), sr)
+        return spk_embedding.unsqueeze(0).to(self.device, dtype=torch.bfloat16)
 
     def embed_codes(self, codes: torch.Tensor) -> torch.Tensor:
         return sum(emb(codes[:, i]) for i, emb in enumerate(self.embeddings))
@@ -204,12 +219,9 @@ class Zonos(nn.Module):
     def prepare_conditioning(self, cond_dict: dict, uncond_dict: dict | None = None) -> torch.Tensor:
         if uncond_dict is None:
             uncond_dict = {k: cond_dict[k] for k in self.prefix_conditioner.required_keys}
-        return torch.cat(
-            [
-                self.prefix_conditioner(cond_dict),
-                self.prefix_conditioner(uncond_dict),
-            ]
-        )
+        cond = self.prefix_conditioner(cond_dict).to(self.device)
+        uncond = self.prefix_conditioner(uncond_dict).to(self.device)
+        return torch.cat([cond, uncond])
 
     def can_use_cudagraphs(self) -> bool:
         # Only the mamba-ssm backbone supports CUDA Graphs at the moment
@@ -270,7 +282,7 @@ class Zonos(nn.Module):
         max_steps = delayed_codes.shape[2] - offset
         remaining_steps = torch.full((batch_size,), max_steps, device=device)
         progress = tqdm(total=max_steps, desc="Generating", disable=not progress_bar)
-        cfg_scale = torch.tensor(cfg_scale)
+        cfg_scale = float(cfg_scale)
 
         step = 0
         while torch.max(remaining_steps) > 0:
@@ -282,7 +294,9 @@ class Zonos(nn.Module):
             next_token = sample_from_logits(logits, generated_tokens=delayed_codes[..., :offset], **sampling_params)
             eos_in_cb0 = next_token[:, 0] == self.eos_token_id
 
-            remaining_steps[eos_in_cb0[:, 0]] = torch.minimum(remaining_steps[eos_in_cb0[:, 0]], torch.tensor(9))
+            remaining_steps[eos_in_cb0[:, 0]] = torch.minimum(
+                remaining_steps[eos_in_cb0[:, 0]], torch.tensor(9, device=device)
+            )
             stopping |= eos_in_cb0[:, 0]
 
             eos_codebook_idx = 9 - remaining_steps

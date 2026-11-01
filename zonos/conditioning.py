@@ -1,11 +1,12 @@
 from functools import cache
-from typing import Any, Literal, Iterable
+from typing import Any, Literal, Iterable, List, Union
 
 import torch
 import torch.nn as nn
 
 from zonos.config import PrefixConditionerConfig
 from zonos.utils import DEFAULT_DEVICE
+from huggingface_hub import hf_hub_download
 
 
 class Conditioner(nn.Module):
@@ -204,7 +205,7 @@ def get_backend(language: str) -> "EspeakBackend":
     return backend
 
 
-def phonemize(texts: list[str], languages: list[str]) -> list[str]:
+def phonemize_espeak(texts: list[str], languages: list[str]) -> list[str]:
     texts = clean(texts, languages)
 
     batch_phonemes = []
@@ -216,10 +217,43 @@ def phonemize(texts: list[str], languages: list[str]) -> list[str]:
     return batch_phonemes
 
 
+# Backward compatibility alias
+phonemize_not_he = phonemize_espeak
+
+
 class EspeakPhonemeConditioner(Conditioner):
-    def __init__(self, output_dim: int, **kwargs):
+    def __init__(self, output_dim: int, revision: str = "main", **kwargs):
         super().__init__(output_dim, **kwargs)
         self.phoneme_embedder = nn.Embedding(len(SPECIAL_TOKEN_IDS) + len(symbols), output_dim)
+        self.revision = revision
+        self.phonikud = None
+
+    def download_phonikud(self, revision: str):
+        return hf_hub_download(
+            repo_id="notmax123/Zonos-Hebrew",
+            filename="phonikud-1.0.onnx",
+            revision=revision,
+        )
+
+    def _get_phonikud(self):
+        if self.phonikud is None:
+            from phonikud_onnx import Phonikud
+
+            phonikud_path = self.download_phonikud(self.revision)
+            self.phonikud = Phonikud(phonikud_path)
+        return self.phonikud
+
+    @staticmethod
+    def _contains_hebrew_letters(s: str) -> bool:
+        return any("\u0590" <= ch <= "\u05FF" for ch in s)
+
+    @staticmethod
+    def _contains_hebrew_niqqud(s: str) -> bool:
+        return any("\u0591" <= ch <= "\u05C7" for ch in s)
+
+    @staticmethod
+    def _looks_like_prephonemized_ipa(s: str) -> bool:
+        return (not EspeakPhonemeConditioner._contains_hebrew_letters(s)) and any((ch in set(_letters_ipa)) for ch in s)
 
     def apply_cond(self, texts: list[str], languages: list[str]) -> torch.Tensor:
         """
@@ -229,7 +263,27 @@ class EspeakPhonemeConditioner(Conditioner):
         """
         device = self.phoneme_embedder.weight.device
 
-        phonemes = phonemize(texts, languages)
+        phonemes = []
+        for text, language in zip(texts, languages):
+            if language == "he":
+                # If already IPA-like (e.g., "hˈu tsafˈa …"), just append it
+                if self._looks_like_prephonemized_ipa(text):
+                    phonemes.append(text)
+                    continue
+
+                # If Hebrew niqqud already present, skip adding diacritics
+                if self._contains_hebrew_niqqud(text):
+                    diacritized = text
+                else:
+                    diacritized = self._get_phonikud().add_diacritics(text)
+
+                from phonikud import phonemize as hebrew_phonemize
+
+                phonemes.append(hebrew_phonemize(diacritized))
+            else:
+                p = phonemize_espeak([text], [language])
+                phonemes.append(p[0])
+
         phoneme_ids, _ = tokenize_phonemes(phonemes)
         phoneme_embeds = self.phoneme_embedder(phoneme_ids.to(device))
 
@@ -257,7 +311,7 @@ class FourierConditioner(Conditioner):
     def apply_cond(self, x: torch.Tensor) -> torch.Tensor:
         assert x.shape[-1] == self.input_dim
         x = (x - self.min_val) / (self.max_val - self.min_val)  # [batch_size, seq_len, input_dim]
-        f = 2 * torch.pi * x.to(self.weight.dtype) @ self.weight.T  # [batch_size, seq_len, output_dim // 2]
+        f = 2 * torch.pi * x.to(device=self.weight.device, dtype=self.weight.dtype) @ self.weight.T  # [batch_size, seq_len, output_dim // 2]
         return torch.cat([f.cos(), f.sin()], dim=-1)  # [batch_size, seq_len, output_dim]
 
 
@@ -270,7 +324,7 @@ class IntegerConditioner(Conditioner):
 
     def apply_cond(self, x: torch.Tensor) -> torch.Tensor:
         assert x.shape[-1] == 1
-        return self.int_embedder(x.squeeze(-1) - self.min_val)  # [batch_size, seq_len, output_dim]
+        return self.int_embedder((x.squeeze(-1) - self.min_val).to(self.int_embedder.weight.device))  # [batch_size, seq_len, output_dim]
 
 
 class PassthroughConditioner(Conditioner):
@@ -279,7 +333,12 @@ class PassthroughConditioner(Conditioner):
 
     def apply_cond(self, x: torch.Tensor) -> torch.Tensor:
         assert x.shape[-1] == self.cond_dim
-        return x
+        device = (
+            self.project.weight.device
+            if hasattr(self.project, "weight") and self.project.weight is not None
+            else (self.uncond_vector.device if self.uncond_vector is not None else x.device)
+        )
+        return x.to(device)
 
 
 _cond_cls_map = {
@@ -309,8 +368,10 @@ class PrefixConditioner(Conditioner):
             conds.append(conditioner(cond_dict.get(conditioner.name)))
         max_bsz = max(map(len, conds))
         assert all(c.shape[0] in (max_bsz, 1) for c in conds)
-        conds = [c.expand(max_bsz, -1, -1) for c in conds]
+        target_device = self.norm.weight.device
+        conds = [c.to(target_device).expand(max_bsz, -1, -1) for c in conds]
         return self.norm(self.project(torch.cat(conds, dim=-2)))
+
 
 
 supported_language_codes = [
@@ -323,47 +384,22 @@ supported_language_codes = [
     'ml', 'mr', 'ms', 'mt', 'my', 'nb', 'nci', 'ne', 'nl', 'om', 'or', 'pa', 'pap',
     'pl', 'pt', 'pt-br', 'py', 'quc', 'ro', 'ru', 'ru-lv', 'sd', 'shn', 'si', 'sk',
     'sl', 'sq', 'sr', 'sv', 'sw', 'ta', 'te', 'tn', 'tr', 'tt', 'ur', 'uz', 'vi',
-    'vi-vn-x-central', 'vi-vn-x-south', 'yue'
-]  # fmt: off
+    'vi-vn-x-central', 'vi-vn-x-south', 'yue', 'he',
+]
 
 
 def make_cond_dict(
-    text: str = "It would be nice to have time for testing, indeed.",
-    language: str = "en-us",
+    text: str | list[str] | tuple[str, ...] = "It would be nice to have time for testing, indeed.",
+    language: str | list[str] | tuple[str, ...] = "en-us",
     speaker: torch.Tensor | None = None,
-    
-    # Emotion vector from 0.0 to 1.0
-    #   Is entangled with pitch_std because more emotion => more pitch variation
-    #                     VQScore and DNSMOS because they favor neutral speech
-    #
-    #                       Happiness, Sadness, Disgust, Fear, Surprise, Anger, Other, Neutral
+    # Emotion vector from 0.0 to 1.0: Happiness, Sadness, Disgust, Fear, Surprise, Anger, Other, Neutral
     emotion: list[float] = [0.3077, 0.0256, 0.0256, 0.0256, 0.0256, 0.0256, 0.2564, 0.3077],
-
-    # Maximum frequency (0 to 24000), should be 22050 or 24000 for 44.1 or 48 kHz audio
-    # For voice cloning use 22050
     fmax: float = 22050.0,
-    
-    # Standard deviation for pitch (0 to 400), should be 
-    #   20-45 for normal speech, 
-    #   60-150 for expressive speech, 
-    #   higher values => crazier samples
     pitch_std: float = 20.0,
-
-    # Speaking rate in phonemes per minute (0 to 40). 30 is very fast, 10 is slow.
     speaking_rate: float = 15.0,
-
-    # Target VoiceQualityScore for the generated speech (0.5 to 0.8).
-    #   A list of values must be provided which represent each 1/8th of the audio.
-    #   You should unset for expressive speech.
-    # According to discord Chat this is only used for the hybrid model
     vqscore_8: list[float] = [0.78] * 8,
-
-    # CTC target loss
-    # Only used for the hybrid model
     ctc_loss: float = 0.0,
-    # Only used for the hybrid model
     dnsmos_ovrl: float = 4.0,
-    # Only used for the hybrid model
     speaker_noised: bool = False,
     unconditional_keys: Iterable[str] = {"vqscore_8", "dnsmos_ovrl"},
     device: torch.device | str = DEFAULT_DEVICE,
@@ -372,18 +408,35 @@ def make_cond_dict(
     A helper to build the 'cond_dict' that the model expects.
     By default, it will generate a random speaker embedding
     """
-    assert language.lower() in supported_language_codes, "Please pick a supported language"
+    # Check if text is already a list/tuple.
+    if isinstance(text, (list, tuple)):
+        text_list = list(text)
+    else:
+        text_list = [text]
+
+    # Check if language is already a list/tuple.
+    if isinstance(language, (list, tuple)):
+        language_list = list(language)
+    else:
+        language_list = [language]
+
+    for lang in language_list:
+        assert lang.lower() in supported_language_codes, f"Unsupported language: {lang}. Please pick from supported_language_codes."
 
     language_code_to_id = {lang: i for i, lang in enumerate(supported_language_codes)}
 
+    # If only one language is provided but multiple texts, replicate the language.
+    if len(language_list) == 1 and len(text_list) > 1:
+        language_list = language_list * len(text_list)
+
     cond_dict = {
-        "espeak": ([text], [language]),
+        "espeak": (text_list, language_list),
         "speaker": speaker,
         "emotion": emotion,
         "fmax": fmax,
         "pitch_std": pitch_std,
         "speaking_rate": speaking_rate,
-        "language_id": language_code_to_id[language],
+        "language_id": language_code_to_id[language_list[0]],
         "vqscore_8": vqscore_8,
         "ctc_loss": ctc_loss,
         "dnsmos_ovrl": dnsmos_ovrl,

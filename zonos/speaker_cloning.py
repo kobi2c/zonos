@@ -378,12 +378,13 @@ class SpeakerEmbedding(nn.Module):
         assert wav.ndim < 3
         if wav.ndim == 2:
             wav = wav.mean(0, keepdim=True)
+        wav = wav.to(self.device)
         wav = self._get_resampler(sample_rate)(wav)
         return wav
 
     def forward(self, wav: torch.Tensor, sample_rate: int):
         wav = self.prepare_input(wav, sample_rate).to(self.device, self.dtype)
-        return self.model(wav).to(wav.device)
+        return self.model(wav).to(self.device)
 
 
 class SpeakerEmbeddingLDA(nn.Module):
@@ -399,15 +400,16 @@ class SpeakerEmbeddingLDA(nn.Module):
         )
 
         self.device = device
-        with torch.device(device):
+        with torch.device("cpu"):
             self.model = SpeakerEmbedding(spk_model_path, device)
-            lda_sd = torch.load(lda_spk_model_path, weights_only=True)
+            lda_sd = torch.load(lda_spk_model_path, weights_only=True, map_location="cpu")
             out_features, in_features = lda_sd["weight"].shape
             self.lda = nn.Linear(in_features, out_features, bias=True, dtype=torch.float32)
             self.lda.load_state_dict(lda_sd)
+        self.to(device)
 
         self.requires_grad_(False).eval()
 
     def forward(self, wav: torch.Tensor, sample_rate: int):
-        emb = self.model(wav, sample_rate).to(torch.float32)
+        emb = self.model(wav, sample_rate).to(self.device, dtype=torch.float32)
         return emb, self.lda(emb)

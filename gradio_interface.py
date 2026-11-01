@@ -4,11 +4,15 @@ import gradio as gr
 import json
 import base64
 import tempfile
+
 import os
+
 from os import getenv
 
-from zonos.model import Zonos, DEFAULT_BACKBONE_CLS as ZonosBackbone
+import torchaudio
+from zonos.model import  Zonos, DEFAULT_BACKBONE_CLS as ZonosBackbone
 from zonos.conditioning import make_cond_dict, supported_language_codes
+
 from zonos.utils import DEFAULT_DEVICE as device
 
 CURRENT_MODEL_TYPE = None
@@ -21,8 +25,8 @@ SPEAKER_AUDIO_PATH = None
 def load_model_if_needed(model_choice: str):
     global CURRENT_MODEL_TYPE, CURRENT_MODEL
     if CURRENT_MODEL_TYPE != model_choice:
-        if globals().get("CURRENT_MODEL") is not None:
-            CURRENT_MODEL = None
+        if CURRENT_MODEL is not None:
+            del CURRENT_MODEL
             torch.cuda.empty_cache()
         print(f"Loading {model_choice} model...")
         CURRENT_MODEL = Zonos.from_pretrained(model_choice, device=device)
@@ -41,8 +45,11 @@ def update_ui(model_choice):
     cond_names = [c.name for c in model.prefix_conditioner.conditioners]
     print("Conditioners in this model:", cond_names)
 
+    is_hebrew = "Hebrew" in model_choice
+    default_lang = "he" if is_hebrew else "en-us"
+
     text_update = gr.update(visible=("espeak" in cond_names))
-    language_update = gr.update(visible=("espeak" in cond_names))
+    language_update = gr.update(visible=("espeak" in cond_names), value=default_lang)
     speaker_audio_update = gr.update(visible=("speaker" in cond_names))
     prefix_audio_update = gr.update(visible=True)
     emotion1_update = gr.update(visible=("emotion" in cond_names))
@@ -170,8 +177,6 @@ def generate_audio(
 
     vq_val = float(vq_single)
     vq_tensor = torch.tensor([vq_val] * 8, device=device).unsqueeze(0)
-
-    # Remove apostrophes which can cause issues with the phonemizer/TTS
     text = text.replace("'", "").replace("’", "").replace("‘", "")
 
     cond_dict = make_cond_dict(
@@ -254,8 +259,6 @@ def audio_to_base64(filepath):
         encoded = base64.b64encode(f.read()).decode("utf-8")
     ext = os.path.splitext(filepath)[1]
     return {"ext": ext, "data": encoded}
-
-
 def base64_to_audio(b64_dict):
     if not b64_dict or "data" not in b64_dict:
         return None
@@ -288,13 +291,11 @@ def import_settings(file_path):
     except Exception as e:
         print(f"Error loading settings: {e}")
         return [gr.update()] * len(SETTINGS_KEYS)
-        
     outputs = []
     for key in SETTINGS_KEYS:
         if key not in settings:
             outputs.append(gr.update())
             continue
-            
         val = settings[key]
         if key in ["speaker_audio", "prefix_audio"]:
             if val is not None and isinstance(val, dict):
@@ -309,6 +310,7 @@ def import_settings(file_path):
 def build_interface():
     supported_models = []
     if "hybrid" in ZonosBackbone.supported_architectures:
+        supported_models.append("notmax123/Zonos-Hebrew")
         supported_models.append("Zyphra/Zonos-v0.1-hybrid")
     else:
         print(
@@ -319,17 +321,19 @@ def build_interface():
     if "transformer" in ZonosBackbone.supported_architectures:
         supported_models.append("Zyphra/Zonos-v0.1-transformer")
 
+    default_model = supported_models[0] if supported_models else "Zyphra/Zonos-v0.1-transformer"
+    default_language = "he" if "Hebrew" in default_model else "en-us"
+
     with gr.Blocks() as demo:
         with gr.Row():
             import_button = gr.UploadButton("Import Settings", file_types=[".json"])
             export_button = gr.Button("Export Settings")
             export_file = gr.File(label="Exported Settings", visible=False)
-
         with gr.Row():
             with gr.Column():
                 model_choice = gr.Dropdown(
                     choices=supported_models,
-                    value=supported_models[0],
+                    value=default_model,
                     label="Zonos Model Type",
                     info="Select the model variant to use.",
                 )
@@ -341,7 +345,7 @@ def build_interface():
                 )
                 language = gr.Dropdown(
                     choices=supported_language_codes,
-                    value="en-us",
+                    value=default_language,
                     label="Language Code",
                     info="Select a language code.",
                 )
